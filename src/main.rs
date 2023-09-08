@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use tokio::sync::mpsc;
 use walkdir::WalkDir;
 use fs_extra::dir::get_size;
+use clap::{Command, Arg};
 
 fn format_size(size: u64) -> String {
     const KB: f64 = 1024.0;
@@ -24,8 +25,9 @@ fn format_size(size: u64) -> String {
     format!("{:.3} {}", value, unit)
 }
 
-async fn find_largest_dirs(root_dir: PathBuf, tx: mpsc::Sender<(PathBuf, u64)>) {
+async fn find_largest_dirs(root_dir: PathBuf, tx: mpsc::Sender<(PathBuf, u64)>, max_depth: usize) {
     let entries = WalkDir::new(&root_dir)
+        .max_depth(max_depth)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|entry| entry.file_type().is_dir());
@@ -54,16 +56,33 @@ async fn find_largest_dirs(root_dir: PathBuf, tx: mpsc::Sender<(PathBuf, u64)>) 
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let matches = Command::new("Sort directories by size")
+        .arg(Arg::new("max_recursion_depth")
+            .short('r')
+            .long("max-recursion")
+            .value_name("DEPTH")
+            .value_parser(clap::value_parser!(i64))
+            .help("Set the maximum recursion depth")
+            .required(false))
+        .arg(Arg::new("directory")
+            .value_name("DIRECTORY")
+            .help("Target directory to scan")
+            .required(true)
+            .index(1))
+        .get_matches();
 
-    if args.len() != 2 {
-        eprintln!("Usage: {} <directory>", args[0]);
-        std::process::exit(1);
-    }
+    let max_depth = matches.get_one("max_recursion_depth")
+        .map(|d: &i64| *d as usize)
+        .unwrap_or(std::usize::MAX);
 
-    let root_dir = PathBuf::from(&args[1]);
+    let root_dir = PathBuf::from(
+        matches.get_one::<String>("directory")
+            .map(|s| s.as_str())
+            .unwrap()
+    );
+
     let (tx, mut rx) = mpsc::channel::<(PathBuf, u64)>(32);
-    let largest_dirs = tokio::spawn(find_largest_dirs(root_dir.clone(), tx));
+    let largest_dirs = tokio::spawn(find_largest_dirs(root_dir.clone(), tx, max_depth));
     let mut results: Vec<(PathBuf, u64)> = Vec::new();
 
     while let Some(result) = rx.recv().await {
